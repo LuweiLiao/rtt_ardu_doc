@@ -1,0 +1,1 @@
+- [2026-05-17] **IWDG 启动时机修复**: ChibiOS 对齐 — setup 前启动 IWDG，timer 线程喂狗。Commit: `1eaf537bcb`. 
