@@ -65,6 +65,21 @@
 
 ---
 
+## Deviation 5: 线程栈分配
+
+| 字段 | 内容 |
+|------|------|
+| **Title** | 线程栈：ChibiOS 静态 BSS 分配 vs RTT 动态堆分配 |
+| **Status** | **Accepted** — 行为等价，资源模型不同 |
+| **Context** | ChibiOS 使用 `THD_WORKING_AREA(wa, N)` 宏在 BSS 段静态分配线程栈，栈内存不占用堆空间。RTT 的 `rt_thread_create()` 内部通过 `RT_KERNEL_MALLOC(stack_size)` 从动态堆分配线程栈。这意味着在 ChibiOS 上线程栈不计入堆使用量，而在 RTT 上全部线程栈总和必须小于可用堆。CUAV V5 堆仅 86KB，而 AP_HAL_RTT 的线程栈总需求曾达 ~59KB，导致堆耗尽。 |
+| **Decision** | 1. 缩减 `Scheduler.cpp` 中线程栈大小至合理值：ap_timer 16384→4096, ap_io 8192→4096, storage 8192→4096, ap_uart 8192→4096（共节省 24KB）<br>2. 未来新增线程时需评估堆预算<br>3. 长期考虑：将关键线程栈改为静态分配（手动分配 `rt_malloc` + `rt_thread_init`），需要 ADR 升级 |
+| **Consequences** | ✅ 堆耗尽已修复（`used < total`）<br>⚠️ 缩减后的栈大小需要持续验证无栈溢出<br>⚠️ 栈溢出检测需要额外 canary 机制（RTT 无内置检测）<br>⚠️ 新增功能线程时必须重新评估堆预算<br>✅ 静态分配升级路径保留 |
+| **ChibiOS Reference** | `os/common/ports/ARMCMx/chtypes.h` — `THD_WORKING_AREA(wa, N)` 宏定义（BSS 静态分配） |
+| **RTT Implementation** | `modules/rt-thread/src/thread.c:568` — `RT_KERNEL_MALLOC(stack_size)` <br>`libraries/AP_HAL_RTT/Scheduler.cpp` — `thread_create_worker()` 封装及栈大小常量 |
+| **Verification** | 1. GDB 检查 `system_heap`：`used < total` ✅<br>2. USB 枚举正常 ✅<br>3. `HAL::run()` 执行到 `setup_stage=502` ✅（堆健康，阻塞在其他问题） |
+
+---
+
 ## 偏离项汇总
 
 | # | 偏离项 | ChibiOS 实现 | RTT 实现 | 复杂度 | 验证状态 |
@@ -73,6 +88,7 @@
 | 2 | ADC | DMA 环形缓冲 | CMSIS 直接寄存器 | 中 | ✅ 已验证 |
 | 3 | SPI | SPI LLD 寄存器 | RTT SPI Device | 低 | ✅ 已验证 |
 | 4 | Scheduler | chThdSleep + WFI | rt_thread_mdelay + idlehook | 低 | ✅ 已验证 |
+| 5 | 线程栈 | 静态 BSS (THD_WORKING_AREA) | 动态堆 (RT_KERNEL_MALLOC) | 高 | ✅ 已验证(已修复) |
 
 ---
 
