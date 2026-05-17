@@ -1,0 +1,1 @@
+见 /data/firmare/pogo-apm/.trae/plans/chibios-alignment-assessment.md
