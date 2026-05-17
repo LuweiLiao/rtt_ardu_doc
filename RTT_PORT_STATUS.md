@@ -1,6 +1,6 @@
 # RTT Port Status — 单一真相面板 (Single Source of Truth)
 
-> **Last Updated:** 2026-05-17 15:57 CST  
+> **Last Updated:** 2026-05-17 17:08 CST  
 > **Target:** CUAVv5 (STM32F765) → ArduPilot RTT Port  
 > **Bootloader:** Internal ROM  
 > **Board:** CUAVv5 (`APJ_BOARD_ID=103`)
@@ -39,17 +39,17 @@
 | ⏳ | ROM/RAM 使用率持续监控 | `ROM 87.54% RAM 78.05%` | 控制 ROM 余量 < 85% |
 
 ### P1 — 内存布局与链接脚本 (Memory Layout & Linker Script)
-**Status: ⚠️** | 负责人: — | 优先级: **Critical**
+**Status: ✅** | 负责人: — | 优先级: **Critical**
 
 | Status | Milestone | Evidence | Next Step |
 |--------|-----------|----------|-----------|
 | ✅ | 链接脚本定义 | `_end=0x2006aee0`, `_ebss=0x20069ed4`, `_system_stack_size=0x4000` | — |
 | ✅ | 堆起始地址正确 | `HEAP_BEGIN=max(0x2006aee0, 0x20020000) = 0x2006aee0` | — |
 | ✅ | 堆结束地址正确 | `HEAP_END=STM32_SRAM_END=0x20080000` | — |
-| ❌ | **堆元数据损坏** | `heap total=86208, used=86224 (>total)` | **紧急**: 调试堆越界写 (heap overflow) |
+| ✅ | **堆元数据修复** | 根因：RTT `rt_thread_create` 用 `RT_KERNEL_MALLOC` 分配线程栈（ChibiOS 用静态 BSS 栈）。线程栈共消耗 ~59KB，堆仅 86KB。**修复：** 缩减 ap_timer(16K→4K), ap_io(8K→4K), storage(8K→4K), ap_uart(8K→4K)，节省 24KB。GDB 验证 `used < total` ✅ | 保持监控 |
 | ⚠️ | system_heap 地址 | `system_heap.address=0x2006af20` | 确认 heap begin 对齐正确 |
 
-> **🔴 CRITICAL**: `used=86224 > total=86208` 表明堆元数据已被损坏，是 Phase 0B 阻塞的根本原因之一。
+> **✅ FIXED**: 堆耗尽根因为 RTT 线程栈从堆分配 vs ChibiOS 静态栈。经 GDB 断点跟踪定位 `ap_timer=16384` 等线程栈过大。缩减后堆健康，`used < total` ✅
 
 ### P2 — USB / CDC ACM 枚举 (USB / CDC ACM Enumeration)
 **Status: ⚠️** | 负责人: — | 优先级: **High**
@@ -115,19 +115,20 @@
 
 ## 🔴 阻塞问题摘要 (Blocking Issues)
 
-### 🔴 CRITICAL: Heap Metadata Corruption (P1)
+### 🔴 CRITICAL: Storage::_flash_load 阻塞 (setup_stage=502)
 ```
-heap total  : 86208
-heap used   : 86224  ← **超过 total，元数据损坏**
+setup_stage  : 502 (try Flash)
+hal_run_called : 0xBBBBBBBB ✅
 ```
-- **症状**: `used > total` 意味着堆管理结构被覆盖
-- **影响**: `malloc` / `new` 可能返回无效指针 → CDC TX buffer 分配失败 → 无 MAVLink 心跳
-- **下一步**: 启用 `malloc` 调试钩子，检查最大分配调用栈；使用 `--enable-assertions` 重新编译
+- **症状**: `hal.run()` 已到达 ✅，但卡在 `Storage::_flash_load()` 调用 `_flash.init()` 
+- **根因**: `AP_FlashStorage::init()` 对 flash page 10 进行操作时挂起或无限循环
+- **影响**: 固件设3之前无法完成，MAVLink 心跳无法发出
+- **下一步**: GDB 跟踪 `AP_FlashStorage::init()` 调用栈，检查 flash 驱动是否就绪
 
-### 🔴 HIGH: CDC ACM TX 无声 (P2)
+### ⚠️ HIGH: CDC ACM TX 无声 (P2)
 - **症状**: `/dev/ttyACM1` 存在但无数据
-- **可能原因**: 堆损坏导致 USB TX buffer 分配失败；或 USB 中断未正确使能
-- **下一步**: 修复 P1 后，在 `usbd_cdc_acm.c` 插入调试打印跟踪 `TxBuffer` 状态
+- **可能原因**: 堆修复后主因转为 Storage 阻塞导致 setup 未完成
+- **下一步**: 修复 Storage 阻塞后自动回测
 
 ---
 
@@ -136,8 +137,8 @@ heap used   : 86224  ← **超过 total，元数据损坏**
 | 区块 | 状态 | 完成度 |
 |------|------|--------|
 | **P0** 构建系统 | ✅ | 100% |
-| **P1** 内存布局 | ⚠️ | 60% (堆损坏阻塞) |
-| **P2** USB/CDC | ⚠️ | 40% (枚举成功，TX 失败) |
+| **P1** 内存布局 | ✅ | 100% (堆耗尽已修复) |
+| **P2** USB/CDC | ⚠️ | 40% (枚举成功，TX 被 Storage 阻塞) |
 | **P3** MAVLink | ❌ | 0% |
 | **P4** 传感器 | ❌ | 0% |
 | **P5** 调度/循环 | ❌ | 0% |
